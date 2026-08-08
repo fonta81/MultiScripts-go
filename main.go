@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
 	"fmt"
 	"log"
 	"os"
@@ -11,256 +11,314 @@ import (
 	"github.com/jroimartin/gocui"
 )
 
-// ScriptDef define la estructura escalable para nuestro catálogo de scripts
-type ScriptDef struct {
-	Name        string
-	Description string
-	Command     string
-	Args        []string
-	SourceFile  string
+// ============================================================================
+// ESTRUCTURA ESCALABLE: Script
+// ============================================================================
+
+// Script representa un script/módulo ejecutable del catálogo.
+// Para añadir nuevos scripts, solo instancia más elementos en el slice
+// global `scriptsCatalog` — la lógica visual NO necesita cambios.
+type Script struct {
+	Name        string   // Nombre visible en la lista
+	Description string   // Descripción breve
+	Category    string   // Categoría (System, DevOps, Utils, etc.)
+	Author      string   // Autor del script
+	FilePath    string   // Ruta al archivo fuente
+	Command     []string // Comando a ejecutar (ej: ["bash", "scripts/hello.sh"])
 }
 
-// Catálogo global de scripts
-var scripts = []ScriptDef{
+// scriptsCatalog es el catálogo central. Añade nuevos scripts aquí.
+var scriptsCatalog = []Script{
 	{
-		Name:        "Test de Red (Ping)",
-		Description: "Ejecuta un ping a los servidores de Google (8.8.8.8) para comprobar la conectividad.",
-		Command:     "bash",
-		Args:        []string{"./test_red.sh"},
-		SourceFile:  "./test_red.sh",
+		Name:        "hello.sh",
+		Description: "Script de saludo interactivo. Muestra un mensaje de bienvenida con la fecha actual y variables de entorno.",
+		Category:    "Utils",
+		Author:      "DevTeam",
+		FilePath:    "scripts/hello.sh",
+		Command:     []string{"bash", "scripts/hello.sh"},
 	},
 	{
-		Name:        "Script en Python",
-		Description: "Un script de prueba simple escrito en Python que imprime un mensaje.",
-		Command:     "python3",
-		Args:        []string{"./hola.py"},
-		SourceFile:  "./hola.py",
+		Name:        "sysinfo.sh",
+		Description: "Recopila información del sistema: SO, arquitectura, CPU, memoria disponible y uptime.",
+		Category:    "System",
+		Author:      "DevTeam",
+		FilePath:    "scripts/sysinfo.sh",
+		Command:     []string{"bash", "scripts/sysinfo.sh"},
 	},
 	{
-		Name:        "Información del Sistema",
-		Description: "Obtiene información básica del kernel y arquitectura del sistema operativo.",
-		Command:     "bash",
-		Args:        []string{"./sysinfo.sh"},
-		SourceFile:  "./sysinfo.sh",
+		Name:        "backup.sh",
+		Description: "Simula un proceso de backup mostrando progreso por pasos. Útil como plantilla para pipelines de respaldo.",
+		Category:    "DevOps",
+		Author:      "DevTeam",
+		FilePath:    "scripts/backup.sh",
+		Command:     []string{"bash", "scripts/backup.sh"},
 	},
 }
 
-var currentIndex = 0
+// ============================================================================
+// ESTADO GLOBAL DE LA APLICACIÓN
+// ============================================================================
 
-func main() {
-	// Generar archivos de prueba automáticamente para que el ejemplo funcione out-of-the-box
-	generateTestFiles()
-
-	// Inicializar gocui
-	g, err := gocui.NewGui(gocui.OutputNormal)
-	if err != nil {
-		log.Panicln(err)
-	}
-	defer g.Close()
-
-	g.Highlight = true
-	g.Cursor = true
-	g.SelFgColor = gocui.ColorGreen
-
-	g.SetManagerFunc(layout)
-
-	if err := keybindings(g); err != nil {
-		log.Panicln(err)
-	}
-
-	if err := g.MainLoop(); err != nil && err != gocui.ErrQuit {
-		log.Panicln(err)
-	}
+type AppState struct {
+	selectedIndex int      // Índice del script seleccionado en la lista
+	scripts       []Script // Referencia al catálogo
+	outputBuffer  string   // Buffer para mostrar salida de ejecución
 }
 
-// layout define la disposición de los paneles en la terminal
+var state = &AppState{
+	selectedIndex: 0,
+	scripts:       scriptsCatalog,
+}
+
+// Constantes de nombres de vistas
+const (
+	ViewList    = "list"
+	ViewInfo    = "info"
+	ViewPreview = "preview"
+	ViewHelp    = "help"
+	ViewOutput  = "output"
+)
+
+// Colores ANSI para gocui (usando atributos)
+var (
+	colorTitle    = gocui.ColorYellow | gocui.AttrBold
+	colorSelected = gocui.ColorCyan | gocui.AttrBold
+	colorBorder   = gocui.ColorWhite
+	colorHelp     = gocui.ColorGreen
+)
+
+// ============================================================================
+// LAYOUT: Posicionamiento de vistas
+// ============================================================================
+
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
+	if maxX < 40 || maxY < 15 {
+		return nil // Pantalla muy pequeña
+	}
 
-	// Panel izquierdo: Lista de scripts (1/3 de la pantalla)
-	if v, err := g.SetView("list", 0, 0, maxX/3-1, maxY-1); err != nil {
+	// Panel izquierdo: Lista de scripts (30% del ancho)
+	listWidth := maxX / 3
+	if v, err := g.SetView(ViewList, 0, 0, listWidth, maxY-3); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
-		v.Title = " Catálogo de Scripts "
+		v.Title = " Scripts "
 		v.Highlight = true
-		v.SelBgColor = gocui.ColorGreen
+		v.SelBgColor = gocui.ColorCyan
 		v.SelFgColor = gocui.ColorBlack
-
-		for _, s := range scripts {
-			fmt.Fprintln(v, s.Name)
-		}
-
-		if _, err := g.SetCurrentView("list"); err != nil {
+		v.Frame = true
+		v.Editable = false
+		v.Wrap = false
+		updateListView(v)
+		if _, err := g.SetCurrentView(ViewList); err != nil {
 			return err
 		}
 	}
 
-	// Panel superior derecho: Información/Metadatos (1/3 de alto)
-	if v, err := g.SetView("info", maxX/3, 0, maxX-1, maxY/3-1); err != nil {
+	// Panel superior derecho: Info/Resumen
+	infoStartX := listWidth + 1
+	if v, err := g.SetView(ViewInfo, infoStartX, 0, maxX-1, maxY/3); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
-		v.Title = " Información / Resumen "
+		v.Title = " Info / Resumen "
+		v.Frame = true
 		v.Wrap = true
+		v.Editable = false
+		updateInfoView(v)
 	}
 
 	// Panel inferior derecho: Vista previa de código
-	if v, err := g.SetView("preview", maxX/3, maxY/3, maxX-1, maxY-1); err != nil {
+	previewStartY := maxY/3 + 1
+	if v, err := g.SetView(ViewPreview, infoStartX, previewStartY, maxX-1, maxY-3); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
-		v.Title = " Vista Previa (Código Fuente) "
-		v.Wrap = true
+		v.Title = " Vista Previa (10-15 líneas) "
+		v.Frame = true
+		v.Wrap = false
+		v.Editable = false
+		updatePreviewView(v)
 	}
 
-	// Forzar la actualización inicial de la vista de detalles
-	updateDetails(g)
-	return nil
-}
-
-// keybindings mapea los atajos de teclado a las funciones
-func keybindings(g *gocui.Gui) error {
-	// Salir del programa con q o Ctrl+C
-	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, quit); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("", 'q', gocui.ModNone, quit); err != nil {
-		return err
-	}
-
-	// Navegación en la lista (Flechas Arriba/Abajo)
-	if err := g.SetKeybinding("list", gocui.KeyArrowDown, gocui.ModNone, cursorDown); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("list", gocui.KeyArrowUp, gocui.ModNone, cursorUp); err != nil {
-		return err
-	}
-
-	// Ejecutar script con Enter
-	if err := g.SetKeybinding("list", gocui.KeyEnter, gocui.ModNone, executeSelected); err != nil {
-		return err
-	}
-
-	// Cerrar el modal de salida de ejecución
-	if err := g.SetKeybinding("modal", gocui.KeyEnter, gocui.ModNone, closeModal); err != nil {
-		return err
+	// Barra inferior: Atajos de teclado
+	if v, err := g.SetView(ViewHelp, 0, maxY-3, maxX-1, maxY-1); err != nil {
+		if err != gocui.ErrUnknownView {
+			return err
+		}
+		v.Frame = false
+		v.Editable = false
+		v.BgColor = gocui.ColorBlack
+		v.FgColor = gocui.ColorGreen
+		fmt.Fprintf(v, " ↑/↓: Navegar  |  Enter: Ejecutar  |  q/Ctrl+C: Salir  |  Total: %d scripts ", len(state.scripts))
 	}
 
 	return nil
 }
+
+// ============================================================================
+// ACTUALIZACIÓN DE VISTAS
+// ============================================================================
+
+func updateListView(v *gocui.View) {
+	v.Clear()
+	for i, s := range state.scripts {
+		if i == state.selectedIndex {
+			fmt.Fprintf(v, "▶ %s\n", s.Name)
+		} else {
+			fmt.Fprintf(v, "  %s\n", s.Name)
+		}
+	}
+}
+
+func updateInfoView(v *gocui.View) {
+	v.Clear()
+	if state.selectedIndex < 0 || state.selectedIndex >= len(state.scripts) {
+		return
+	}
+	s := state.scripts[state.selectedIndex]
+	fmt.Fprintf(v, "Nombre:      %s\n", s.Name)
+	fmt.Fprintf(v, "Categoría:   %s\n", s.Category)
+	fmt.Fprintf(v, "Autor:       %s\n", s.Author)
+	fmt.Fprintf(v, "Comando:     %s\n", strings.Join(s.Command, " "))
+	fmt.Fprintf(v, "Archivo:     %s\n", s.FilePath)
+	fmt.Fprintln(v, strings.Repeat("─", 40))
+	fmt.Fprintf(v, "Descripción:\n%s\n", s.Description)
+}
+
+func updatePreviewView(v *gocui.View) {
+	v.Clear()
+	if state.selectedIndex < 0 || state.selectedIndex >= len(state.scripts) {
+		return
+	}
+	s := state.scripts[state.selectedIndex]
+
+	lines, err := readFirstLines(s.FilePath, 15)
+	if err != nil {
+		fmt.Fprintf(v, "[Error leyendo archivo: %v]\n", err)
+		return
+	}
+
+	for _, line := range lines {
+		// Resaltar comentarios en el preview
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			fmt.Fprintf(v, "\x1b[32m%s\x1b[0m\n", line) // Verde para comentarios
+		} else {
+			fmt.Fprintf(v, "%s\n", line)
+		}
+	}
+	if len(lines) == 15 {
+		fmt.Fprintln(v, "\x1b[90m... (truncado)\x1b[0m")
+	}
+}
+
+// readFirstLines lee las primeras n líneas de un archivo.
+func readFirstLines(path string, n int) ([]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+		if len(lines) >= n {
+			break
+		}
+	}
+	return lines, scanner.Err()
+}
+
+// refreshAllViews fuerza la actualización de todas las vistas dinámicas.
+func refreshAllViews(g *gocui.Gui) {
+	if v, err := g.View(ViewList); err == nil {
+		updateListView(v)
+	}
+	if v, err := g.View(ViewInfo); err == nil {
+		updateInfoView(v)
+	}
+	if v, err := g.View(ViewPreview); err == nil {
+		updatePreviewView(v)
+	}
+}
+
+// ============================================================================
+// KEYBINDINGS Y NAVEGACIÓN
+// ============================================================================
 
 func cursorDown(g *gocui.Gui, v *gocui.View) error {
-	if v != nil {
-		cx, cy := v.Cursor()
-		if currentIndex < len(scripts)-1 {
-			if err := v.SetCursor(cx, cy+1); err == nil {
-				currentIndex++
-				updateDetails(g)
-			}
-		}
+	if state.selectedIndex < len(state.scripts)-1 {
+		state.selectedIndex++
+		refreshAllViews(g)
 	}
 	return nil
 }
 
 func cursorUp(g *gocui.Gui, v *gocui.View) error {
-	if v != nil {
-		cx, cy := v.Cursor()
-		if currentIndex > 0 {
-			if err := v.SetCursor(cx, cy-1); err == nil {
-				currentIndex--
-				updateDetails(g)
-			}
-		}
+	if state.selectedIndex > 0 {
+		state.selectedIndex--
+		refreshAllViews(g)
 	}
 	return nil
 }
 
-// updateDetails actualiza los paneles de Info y Preview según el script seleccionado
-func updateDetails(g *gocui.Gui) {
-	script := scripts[currentIndex]
-
-	// Actualizar Vista Info
-	g.Update(func(gui *gocui.Gui) error {
-		vInfo, err := gui.View("info")
-		if err != nil {
-			return err
-		}
-		vInfo.Clear()
-		fmt.Fprintf(vInfo, "\033[1mNombre:\033[0m %s\n", script.Name)
-		fmt.Fprintf(vInfo, "\033[1mComando:\033[0m %s %s\n", script.Command, strings.Join(script.Args, " "))
-		fmt.Fprintf(vInfo, "\n\033[1mDescripción:\033[0m\n%s\n", script.Description)
-		fmt.Fprintf(vInfo, "\nAtajos: [\u2191/\u2193] Navegar | [Enter] Ejecutar | [q] Salir")
+// executeScript lanza el script seleccionado usando os/exec.
+func executeScript(g *gocui.Gui, v *gocui.View) error {
+	if state.selectedIndex < 0 || state.selectedIndex >= len(state.scripts) {
 		return nil
-	})
-
-	// Actualizar Vista Preview (Primeras 10-15 líneas)
-	g.Update(func(gui *gocui.Gui) error {
-		vPrev, err := gui.View("preview")
-		if err != nil {
-			return err
-		}
-		vPrev.Clear()
-
-		content, err := os.ReadFile(script.SourceFile)
-		if err != nil {
-			fmt.Fprintf(vPrev, "Error leyendo archivo: %v", err)
-			return nil
-		}
-
-		lines := strings.Split(string(content), "\n")
-		limit := 15
-		if len(lines) < limit {
-			limit = len(lines)
-		}
-
-		for i := 0; i < limit; i++ {
-			fmt.Fprintln(vPrev, lines[i])
-		}
-		if len(lines) > limit {
-			fmt.Fprintln(vPrev, "\n... (archivo truncado en la vista previa) ...")
-		}
-		return nil
-	})
-}
-
-// executeSelected captura y muestra la salida del script en una ventana modal (Overlay)
-func executeSelected(g *gocui.Gui, v *gocui.View) error {
-	script := scripts[currentIndex]
-
-	cmd := exec.Command(script.Command, script.Args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	err := cmd.Run()
-	outputStr := out.String()
-	if err != nil {
-		outputStr += fmt.Sprintf("\n[Error de ejecución]: %v", err)
 	}
+	s := state.scripts[state.selectedIndex]
 
-	// Crear vista modal para mostrar la salida
+	// Mostrar vista de salida temporal
 	maxX, maxY := g.Size()
-	if vModal, err := g.SetView("modal", maxX/6, maxY/6, maxX-(maxX/6), maxY-(maxY/6)); err != nil {
+	outputView, err := g.SetView(ViewOutput, maxX/6, maxY/6, maxX-maxX/6, maxY-maxY/6)
+	if err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
-		vModal.Title = fmt.Sprintf(" Salida: %s (Presiona ENTER para cerrar) ", script.Name)
-		vModal.Wrap = true
-		vModal.Autoscroll = true
-		fmt.Fprint(vModal, outputStr)
-		g.SetCurrentView("modal")
+		outputView.Title = fmt.Sprintf(" Ejecutando: %s ", s.Name)
+		outputView.Frame = true
+		outputView.Wrap = true
+		outputView.Autoscroll = true
+		outputView.BgColor = gocui.ColorBlack
+		outputView.FgColor = gocui.ColorWhite
 	}
+
+	outputView.Clear()
+	fmt.Fprintf(outputView, "▶ Comando: %s\n", strings.Join(s.Command, " "))
+	fmt.Fprintf(outputView, "▶ Directorio: %s\n\n", getWorkingDir())
+
+	// Ejecutar el comando
+	cmd := exec.Command(s.Command[0], s.Command[1:]...)
+	cmd.Dir = getWorkingDir()
+
+	// Capturar stdout y stderr combinados
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(outputView, "\x1b[31m[Error de ejecución: %v]\x1b[0m\n", err)
+	}
+	fmt.Fprint(outputView, string(output))
+	fmt.Fprintln(outputView, "\n\n\x1b[33m[Presiona cualquier tecla para cerrar esta ventana]\x1b[0m")
+
+	// Cambiar foco a la vista de salida
+	g.SetCurrentView(ViewOutput)
+
+	// Keybinding temporal para cerrar la vista de salida
+	g.SetKeybinding(ViewOutput, gocui.KeyEnter, gocui.ModNone, closeOutputView)
+	g.SetKeybinding(ViewOutput, 'q', gocui.ModNone, closeOutputView)
+	g.SetKeybinding(ViewOutput, gocui.KeyEsc, gocui.ModNone, closeOutputView)
+
 	return nil
 }
 
-func closeModal(g *gocui.Gui, v *gocui.View) error {
-	if err := g.DeleteView("modal"); err != nil {
-		return err
-	}
-	if _, err := g.SetCurrentView("list"); err != nil {
-		return err
-	}
+func closeOutputView(g *gocui.Gui, v *gocui.View) error {
+	g.DeleteView(ViewOutput)
+	g.DeleteKeybindings(ViewOutput)
+	g.SetCurrentView(ViewList)
 	return nil
 }
 
@@ -268,9 +326,53 @@ func quit(g *gocui.Gui, v *gocui.View) error {
 	return gocui.ErrQuit
 }
 
-// generateTestFiles crea archivos físicos locales para que el código tenga algo que leer y ejecutar
-func generateTestFiles() {
-	os.WriteFile("test_red.sh", []byte("#!/bin/bash\necho \"Iniciando prueba de red...\"\nping -c 3 8.8.8.8\necho \"Prueba completada.\"\n"), 0o755)
-	os.WriteFile("hola.py", []byte("# Script de prueba en Python\nimport time\nprint('Iniciando script...')\ntime.sleep(1)\nprint('¡Hola desde un subcomando gestionado por Go!')\n"), 0o755)
-	os.WriteFile("sysinfo.sh", []byte("#!/bin/bash\necho \"--- Información del Sistema ---\"\nuname -smr\necho \"--- Uso de disco ---\"\ndf -h / | tail -n 1\n"), 0o755)
+func getWorkingDir() string {
+	dir, _ := os.Getwd()
+	return dir
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+func main() {
+	// Verificar que los scripts existen
+	for _, s := range scriptsCatalog {
+		if _, err := os.Stat(s.FilePath); os.IsNotExist(err) {
+			log.Printf("Advertencia: No se encontró %s. Créalo antes de ejecutar.\n", s.FilePath)
+		}
+	}
+
+	g, err := gocui.NewGui(gocui.OutputNormal)
+	if err != nil {
+		log.Panicln(err)
+	}
+	defer g.Close()
+
+	g.SetManagerFunc(layout)
+	g.Cursor = false
+	g.Mouse = false
+	g.InputEsc = true
+
+	// Keybindings globales
+	if err := g.SetKeybinding("", gocui.KeyArrowDown, gocui.ModNone, cursorDown); err != nil {
+		log.Panicln(err)
+	}
+	if err := g.SetKeybinding("", gocui.KeyArrowUp, gocui.ModNone, cursorUp); err != nil {
+		log.Panicln(err)
+	}
+	if err := g.SetKeybinding("", gocui.KeyEnter, gocui.ModNone, executeScript); err != nil {
+		log.Panicln(err)
+	}
+	if err := g.SetKeybinding("", 'q', gocui.ModNone, quit); err != nil {
+		log.Panicln(err)
+	}
+	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, quit); err != nil {
+		log.Panicln(err)
+	}
+
+	// Bucle principal
+	if err := g.MainLoop(); err != nil && err != gocui.ErrQuit {
+		log.Panicln(err)
+	}
 }
