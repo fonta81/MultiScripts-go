@@ -62,7 +62,6 @@ var scriptsCatalog = []Script{
 type AppState struct {
 	selectedIndex int      // Índice del script seleccionado en la lista
 	scripts       []Script // Referencia al catálogo
-	outputBuffer  string   // Buffer para mostrar salida de ejecución
 }
 
 var state = &AppState{
@@ -77,14 +76,6 @@ const (
 	ViewPreview = "preview"
 	ViewHelp    = "help"
 	ViewOutput  = "output"
-)
-
-// Colores ANSI para gocui (usando atributos)
-var (
-	colorTitle    = gocui.ColorYellow | gocui.AttrBold
-	colorSelected = gocui.ColorCyan | gocui.AttrBold
-	colorBorder   = gocui.ColorWhite
-	colorHelp     = gocui.ColorGreen
 )
 
 // ============================================================================
@@ -151,7 +142,7 @@ func layout(g *gocui.Gui) error {
 		v.Editable = false
 		v.BgColor = gocui.ColorBlack
 		v.FgColor = gocui.ColorGreen
-		fmt.Fprintf(v, " ↑/↓: Navegar  |  Enter: Ejecutar  |  q/Ctrl+C: Salir  |  Total: %d scripts ", len(state.scripts))
+		_, _ = fmt.Fprintf(v, " ↑/↓: Navegar  |  Enter: Ejecutar  |  q/Ctrl+C: Salir  |  Total: %d scripts ", len(state.scripts))
 	}
 
 	return nil
