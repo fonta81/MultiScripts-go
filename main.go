@@ -349,7 +349,13 @@ func main() {
 	if err := g.SetKeybinding("", gocui.KeyArrowDown, gocui.ModNone, cursorDown); err != nil {
 		log.Panicln(err)
 	}
+	if err := g.SetKeybinding("", 'j', gocui.ModNone, cursorDown); err != nil {
+		log.Panicln(err)
+	}
 	if err := g.SetKeybinding("", gocui.KeyArrowUp, gocui.ModNone, cursorUp); err != nil {
+		log.Panicln(err)
+	}
+	if err := g.SetKeybinding("", 'k', gocui.ModNone, cursorUp); err != nil {
 		log.Panicln(err)
 	}
 	if err := g.SetKeybinding("", gocui.KeyEnter, gocui.ModNone, executeScript); err != nil {
